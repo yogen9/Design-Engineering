@@ -3,7 +3,6 @@ var express = require("express"),
     bodyParser = require("body-parser"),
     mongo = require("mongoose"),
     fileUpload = require('express-fileupload'),
-    methodOverride = require("method-override"),
     AWS = require('aws-sdk');
 //=================================================
 var app = express();
@@ -42,19 +41,19 @@ app.listen(4000, function () {
 });
 
 app.get("/", (req, res) => {
-    var params0 = {
+    var bucketName = {
         Bucket: "yogen1",
     };
-    s3.listObjects(params0, function (err, data) {
+    s3.listObjects(bucketName, function (err, AllPics) {
         if (err) {
             console.log(err, err.stack);
         } else {
-            //console.log(data);
+            //console.log(AllPics);
             var ImageKeysObj = {
                 ImageKeys: []
             }
-            data.Contents.forEach(obj => {
-                ImageKeysObj.ImageKeys.push(obj.Key);
+            AllPics.Contents.forEach(pic => {
+                ImageKeysObj.ImageKeys.push(pic.Key);
             });
             //console.log(ImageKeysObj);
             res.render("home", {
@@ -66,20 +65,22 @@ app.get("/", (req, res) => {
 
 app.post("/", function (req, res) {
     //uploading image to s3 bucket
-    var params = {
+    var UploadDetail = {
         Body: req.files.img.data,
         Key: req.files.img.name,
         Bucket: "yogen1",
         ServerSideEncryption: "AES256"
     };
-    s3.putObject(params, (err, data) => {
+    s3.putObject(UploadDetail, (err, data) => {
         if (err)
             console.log(err, err.stack);
         else {
             console.log(data);
             res.redirect("/");
         }
-        var par = {
+
+        //detection of object and assing tags
+        var detectLabelParam = {
             Image: {
                 S3Object: {
                     Bucket: "yogen1",
@@ -88,25 +89,26 @@ app.post("/", function (req, res) {
             },
             MinConfidence: 70
         };
-
-        //detection of object and assing tags 
-        rekognition.detectLabels(par, (err, data) => {
+        rekognition.detectLabels(detectLabelParam, (err, returnedLabels) => {
             if (err) {
                 console.log(err, err.stack);
             } else {
-                console.log(data);
+                console.log(returnedLabels);
                 // if tag is new .. it is created in db .. othewise push key into existing tag entry
-                data.Labels.forEach(obj => {
+                returnedLabels.Labels.forEach(individualLabel => {
                     label.findOne({
-                        label: obj.Name.toLowerCase()
+                        label: individualLabel.Name.toLowerCase()
                     }, (err, foundLabel) => { //console.log(err); // always return null .. not important 
-                        console.log(foundLabel); // return object...
+                        console.log("\nFound Labels .......... \n " + foundLabel); // return object...
                         if (foundLabel == null) {
                             //console.log("Err");
                             label.create({
-                                label: obj.Name.toLowerCase(),
+                                label: individualLabel.Name.toLowerCase(),
                                 ImageKeys: req.files.img.name
-                            }, (err, retunCreatedObj) => { /* console.log(err); */ });
+                            }, (err, retunCreatedObj) => {
+                                if (!err)
+                                    console.log("\nLabel Created :" + individualLabel.Name);
+                            });
                         } else {
                             //console.log("found");
                             foundLabel.ImageKeys.push(req.files.img.name)
@@ -118,7 +120,7 @@ app.post("/", function (req, res) {
         });
 
         // index face and store into collection 
-        var params = {
+        var indexingParams = {
             CollectionId: "myphotos",
             DetectionAttributes: ["ALL"],
             ExternalImageId: req.files.img.name,
@@ -129,26 +131,26 @@ app.post("/", function (req, res) {
                 }
             }
         };
-        rekognition.indexFaces(params, (err, data) => {
+        rekognition.indexFaces(indexingParams, (err, indexedImage) => {
             if (err) console.log(err, err.stack);
             else {
-                console.log(data);
-                if (data.FaceRecords.length > 0) {
+                console.log("\nIndexed Image ...." + indexedImage);
+                if (indexedImage.FaceRecords.length > 0) {
                     //face db entry ... ImageID and FaceId
                     var FaceID = [];
-                    data.FaceRecords.forEach(face => {
+                    indexedImage.FaceRecords.forEach(face => {
                         FaceID.push(face.Face.FaceId);
                     });
                     ImageFaces.create({
                         Key: req.files.img.name,
-                        ImageID: data.FaceRecords[0].Face.ImageId,
+                        ImageID: indexedImage.FaceRecords[0].Face.ImageId, //same imageId for all indexed image
                         FaceID: FaceID
                     }, (err, newFaceData) => {
                         console.log(newFaceData);
                     })
                     //Gender And Emotion Label Entries
-                    console.log(data.FaceRecords[0].FaceDetail);
-                    data.FaceRecords.forEach(face => {
+                    console.log("\nOnly One Face Detail From Image For Demo  : \n" + indexedImage.FaceRecords[0].FaceDetail);
+                    indexedImage.FaceRecords.forEach(face => {
                         label.findOne({
                             label: face.FaceDetail.Gender.Value.toLowerCase()
                         }, (err, GenderLabel) => {
@@ -189,10 +191,10 @@ app.get("/similar/:imageKey", (req, res) => {
         Key: req.params.imageKey
     }, (err, returnedFaceIds) => {
         if (err) {
-            console.log("Yo"+err);
+            console.log("Yo" + err);
         } else {
-            console.log("NO FACE ... "+returnedFaceIds);
-            if (returnedFaceIds==null)
+            console.log("NO FACE ... " + returnedFaceIds);
+            if (returnedFaceIds == null)
                 return res.redirect("/");
             returnedFaceIds.FaceID.forEach((faceID) => {
                 var params = {
@@ -209,9 +211,9 @@ app.get("/similar/:imageKey", (req, res) => {
                             console.log(AllFaces);
                         });
                         console.log(AllFaces);
-                         res.render("home", {
-                ImageKeysObj: AllFaces
-            });
+                        res.render("home", {
+                            ImageKeysObj: AllFaces
+                        });
                     }
                 });
             })
